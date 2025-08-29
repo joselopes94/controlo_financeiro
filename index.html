@@ -1,0 +1,807 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Controlo Financeiro Mensal</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+        }
+        .container {
+            max-width: 900px;
+        }
+        .text-income { color: #22c55e; }
+        .text-expense { color: #ef4444; }
+        .bg-income { background-color: #22c55e; }
+        .bg-expense { background-color: #ef4444; }
+        .bg-balance-positive { background-color: #d1fae5; }
+        .bg-balance-negative { background-color: #fee2e2; }
+        .border-income { border-color: #22c55e; }
+        .border-expense { border-color: #ef4444; }
+        .dragging {
+            opacity: 0.5;
+            transform: scale(0.98);
+        }
+        .drag-placeholder {
+            height: 48px;
+            background-color: #e2e8f0;
+            border: 2px dashed #94a3b8;
+            border-radius: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+        .editable-item {
+            cursor: pointer;
+            border: 1px solid transparent;
+            transition: all 0.2s;
+        }
+        .editable-item:hover {
+            background-color: #f8fafc;
+            border-color: #e2e8f0;
+            border-radius: 0.25rem;
+        }
+        .budget-bar {
+            height: 8px;
+            border-radius: 9999px;
+            background-color: #e5e7eb;
+            overflow: hidden;
+        }
+        .budget-fill {
+            height: 100%;
+            transition: width 0.5s ease-in-out;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen flex flex-col items-center p-4 sm:p-6">
+    <div class="container w-full bg-white rounded-3xl shadow-2xl p-6 sm:p-10 mb-8">
+        <h1 class="text-3xl sm:text-4xl font-extrabold text-gray-900 mb-6 text-center">Controlo Financeiro Mensal</h1>
+        <p id="loading-status" class="text-center text-gray-500 mb-4">A carregar dados...</p>
+        <p id="user-id-display" class="text-center text-xs text-gray-400 mb-4">Modo: Armazenamento Local</p>
+        
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8 text-center">
+            <div class="p-4 rounded-xl bg-green-100">
+                <p class="text-sm text-green-700">Total de Entradas</p>
+                <p id="total-receitas" class="text-2xl font-bold text-income">€0,00</p>
+            </div>
+            <div class="p-4 rounded-xl bg-red-100">
+                <p class="text-sm text-red-700">Total de Despesas</p>
+                <p id="total-despesas" class="text-2xl font-bold text-expense">€0,00</p>
+            </div>
+            <div id="balance-card" class="p-4 rounded-xl bg-gray-200">
+                <p class="text-sm text-gray-700">Saldo Final</p>
+                <p id="saldo-final" class="text-2xl font-bold">€0,00</p>
+            </div>
+        </div>
+
+        <div class="flex justify-between items-center mb-4 flex-col sm:flex-row text-center sm:text-left">
+            <div class="flex flex-col text-sm text-gray-500 mb-2 sm:mb-0">
+                <span id="current-date" class="text-lg font-bold text-gray-800"></span>
+            </div>
+            <div class="flex gap-2">
+                <button id="export-btn" class="bg-gray-300 text-gray-800 font-medium py-2 px-4 rounded-lg hover:bg-gray-400 transition-colors text-sm">Exportar</button>
+                <label for="import-file" class="bg-gray-300 text-gray-800 font-medium py-2 px-4 rounded-lg hover:bg-gray-400 transition-colors text-sm cursor-pointer">Importar</label>
+                <input type="file" id="import-file" accept=".json" class="hidden">
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
+            <div class="bg-gray-50 rounded-xl p-4 shadow-inner">
+                <h2 class="text-xl font-bold text-gray-800 mb-4 text-center">Visão Geral</h2>
+                <canvas id="balanceChart"></canvas>
+            </div>
+            <div class="bg-gray-50 rounded-xl p-4 shadow-inner">
+                <h2 class="text-xl font-bold text-gray-800 mb-4 text-center">Despesas por Categoria</h2>
+                <canvas id="expensesChart"></canvas>
+            </div>
+        </div>
+
+        <div class="bg-gray-50 p-6 rounded-xl shadow-inner mb-8">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-xl font-bold text-gray-800">Objetivos</h2>
+                <button id="add-goal-btn" class="bg-teal-600 text-white font-medium py-2 px-4 rounded-lg hover:bg-teal-700 transition-colors text-sm">Adicionar Objetivo</button>
+            </div>
+            <div id="goals-container" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            </div>
+        </div>
+        
+        <div class="bg-gray-50 p-6 rounded-xl shadow-inner mb-8">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-xl font-bold text-gray-800">Orçamento Mensal</h2>
+                <button id="add-budget-btn" class="bg-indigo-600 text-white font-medium py-2 px-4 rounded-lg hover:bg-indigo-700 transition-colors text-sm">Adicionar Orçamento</button>
+            </div>
+            <div id="budgets-container" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            </div>
+        </div>
+
+        <form id="transaction-form" class="bg-gray-50 p-6 rounded-xl shadow-inner mb-8">
+            <h2 class="text-xl font-bold text-gray-800 mb-4">Adicionar Nova Transação</h2>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div class="flex flex-col">
+                    <label for="tipo" class="font-medium text-gray-700 mb-1">Tipo</label>
+                    <select id="tipo" class="p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+                        <option value="receita">Entrada</option>
+                        <option value="despesa">Despesa</option>
+                    </select>
+                </div>
+                <div class="flex flex-col">
+                    <label for="item" class="font-medium text-gray-700 mb-1">Descrição</label>
+                    <input type="text" id="item" placeholder="Ex: Salário, Netflix..." class="p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" required>
+                </div>
+                <div class="flex flex-col">
+                    <label for="valor" class="font-medium text-gray-700 mb-1">Valor (€)</label>
+                    <input type="number" id="valor" placeholder="Ex: 1500" class="p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" step="0.01" required>
+                </div>
+                <div class="flex flex-col">
+                    <label for="categoria" class="font-medium text-gray-700 mb-1">Categoria (Despesa)</label>
+                    <input type="text" id="categoria" placeholder="Ex: Alimentação, Lazer..." class="p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+                </div>
+            </div>
+            <div class="mt-4 flex items-center">
+                <input type="checkbox" id="recorrente" class="h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500">
+                <label for="recorrente" class="ml-2 font-medium text-gray-700">Transação Recorrente (Adicionar automaticamente)</label>
+            </div>
+            <button type="submit" class="w-full mt-6 bg-indigo-600 text-white font-bold py-3 rounded-lg hover:bg-indigo-700 transition-colors">Adicionar Transação</button>
+        </form>
+
+        <div>
+            <h2 class="text-xl font-bold text-gray-800 mb-4 text-center">Histórico de Transações</h2>
+            <ul id="transaction-list" class="bg-gray-50 p-4 rounded-xl shadow-inner"></ul>
+        </div>
+    </div>
+    
+    <div id="modal" class="fixed inset-0 bg-gray-600 bg-opacity-50 hidden flex justify-center items-center p-4 z-50">
+        <div class="bg-white rounded-xl p-6 shadow-xl text-center w-full max-w-sm">
+            <p id="modal-message" class="text-lg font-semibold text-gray-800 mb-4"></p>
+            <button id="modal-close-button" class="bg-indigo-600 text-white font-bold py-2 px-6 rounded-lg hover:bg-indigo-700 transition-colors">OK</button>
+        </div>
+    </div>
+
+    <script>
+        const STORAGE_KEY = 'financialTransactions';
+        const RECURRING_KEY = 'recurringTransactions';
+        const BUDGET_KEY = 'monthlyBudgets';
+        const GOALS_KEY = 'investmentGoals';
+        let expensesChart, balanceChart;
+        let transactions = [];
+        let recurringTransactions = [];
+        let monthlyBudgets = {};
+        let investmentGoals = [];
+        let draggingItem = null;
+
+        const modal = document.getElementById('modal');
+        const modalMessage = document.getElementById('modal-message');
+        const modalCloseButton = document.getElementById('modal-close-button');
+        const exportBtn = document.getElementById('export-btn');
+        const importFileEl = document.getElementById('import-file');
+        const currentDateEl = document.getElementById('current-date');
+        const transactionList = document.getElementById('transaction-list');
+        const transactionForm = document.getElementById('transaction-form');
+        const budgetsContainer = document.getElementById('budgets-container');
+        const addBudgetBtn = document.getElementById('add-budget-btn');
+        const goalsContainer = document.getElementById('goals-container');
+        const addGoalBtn = document.getElementById('add-goal-btn');
+
+        function showMessage(message) {
+            modalMessage.textContent = message;
+            modal.classList.remove('hidden');
+        }
+
+        modalCloseButton.addEventListener('click', () => {
+            modal.classList.add('hidden');
+        });
+
+        function loadData() {
+            try {
+                transactions = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+                recurringTransactions = JSON.parse(localStorage.getItem(RECURRING_KEY) || '[]');
+                monthlyBudgets = JSON.parse(localStorage.getItem(BUDGET_KEY) || '{}');
+                investmentGoals = JSON.parse(localStorage.getItem(GOALS_KEY) || '[]');
+
+                // Check and add recurring transactions for the current month
+                const lastCheckDate = localStorage.getItem('lastRecurringCheck');
+                const today = new Date().toISOString().slice(0, 7); // YYYY-MM
+                if (lastCheckDate !== today) {
+                    addRecurringTransactions();
+                    localStorage.setItem('lastRecurringCheck', today);
+                }
+
+                if (transactions.length === 0) {
+                    // Initial dummy data
+                    transactions = [
+                        { id: Date.now(), tipo: 'receita', item: 'Salário', valor: 1500, timestamp: Date.now() },
+                        { id: Date.now() + 1, tipo: 'receita', item: 'Rendimento Extra', valor: 150, timestamp: Date.now() },
+                        { id: Date.now() + 2, tipo: 'despesa', item: 'CASA', valor: 541, categoria: 'Habitação', timestamp: Date.now() },
+                        { id: Date.now() + 3, tipo: 'despesa', item: 'CARRO FORD PUMA', valor: 288, categoria: 'Transporte', timestamp: Date.now() },
+                    ];
+                    saveTransactions();
+                }
+
+            } catch (e) {
+                console.error("Erro ao carregar dados do localStorage:", e);
+                transactions = [];
+                recurringTransactions = [];
+                monthlyBudgets = {};
+                investmentGoals = [];
+            }
+            updateUI();
+            document.getElementById('loading-status').textContent = 'Dados carregados com sucesso!';
+        }
+
+        function saveTransactions() {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(transactions));
+        }
+
+        function saveRecurring() {
+            localStorage.setItem(RECURRING_KEY, JSON.stringify(recurringTransactions));
+        }
+
+        function saveBudgets() {
+            localStorage.setItem(BUDGET_KEY, JSON.stringify(monthlyBudgets));
+        }
+
+        function saveGoals() {
+            localStorage.setItem(GOALS_KEY, JSON.stringify(investmentGoals));
+        }
+
+        function updateUI() {
+            const totalReceitasEl = document.getElementById('total-receitas');
+            const totalDespesasEl = document.getElementById('total-despesas');
+            const saldoFinalEl = document.getElementById('saldo-final');
+            const balanceCard = document.getElementById('balance-card');
+            
+            let totalReceitas = 0;
+            let totalDespesas = 0;
+            const expenseCategories = {};
+
+            transactionList.innerHTML = '';
+            
+            transactions.forEach(t => {
+                const valor = parseFloat(t.valor);
+                if (t.tipo === 'receita') {
+                    totalReceitas += valor;
+                } else {
+                    totalDespesas += valor;
+                    const categoria = t.categoria || 'Outros';
+                    expenseCategories[categoria] = (expenseCategories[categoria] || 0) + valor;
+                }
+                
+                const li = document.createElement('li');
+                li.className = `flex justify-between items-center p-3 mb-2 rounded-lg shadow-sm border border-gray-200 ${t.tipo === 'receita' ? 'bg-green-50' : 'bg-red-50'}`;
+                li.setAttribute('draggable', true);
+                li.dataset.id = t.id;
+                
+                const spanItem = document.createElement('span');
+                spanItem.className = 'font-medium text-gray-800 editable-item';
+                spanItem.textContent = t.item;
+                spanItem.dataset.id = t.id;
+                
+                spanItem.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    makeEditable(spanItem, t.id);
+                });
+
+                const divDetails = document.createElement('div');
+                divDetails.className = 'flex items-center gap-2';
+                
+                const spanValor = document.createElement('span');
+                spanValor.className = `font-bold ${t.tipo === 'receita' ? 'text-income' : 'text-expense'}`;
+                spanValor.textContent = `${t.tipo === 'receita' ? '+' : '-'}€${valor.toFixed(2).replace('.', ',')}`;
+
+                const buttonRemove = document.createElement('button');
+                buttonRemove.className = 'delete-btn text-gray-400 hover:text-red-500 transition-colors p-1 rounded-full';
+                buttonRemove.dataset.id = t.id;
+                buttonRemove.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm6 0a1 1 0 11-2 0v6a1 1 0 112 0V8z" clip-rule="evenodd" />
+                </svg>`;
+
+                divDetails.appendChild(spanValor);
+                divDetails.appendChild(buttonRemove);
+
+                li.appendChild(spanItem);
+                li.appendChild(divDetails);
+                transactionList.appendChild(li);
+                
+                buttonRemove.addEventListener('click', () => {
+                    deleteTransaction(t.id);
+                });
+            });
+            
+            const saldo = totalReceitas - totalDespesas;
+            
+            totalReceitasEl.textContent = `€${totalReceitas.toFixed(2).replace('.', ',')}`;
+            totalDespesasEl.textContent = `€${totalDespesas.toFixed(2).replace('.', ',')}`;
+            saldoFinalEl.textContent = `€${saldo.toFixed(2).replace('.', ',')}`;
+            
+            balanceCard.classList.remove('bg-gray-200', 'bg-balance-positive', 'bg-balance-negative');
+            if (saldo > 0) {
+                balanceCard.classList.add('bg-balance-positive');
+            } else if (saldo < 0) {
+                balanceCard.classList.add('bg-balance-negative');
+            } else {
+                balanceCard.classList.add('bg-gray-200');
+            }
+
+            updateCharts(totalReceitas, totalDespesas, expenseCategories);
+            updateBudgets(expenseCategories);
+            updateGoals();
+        }
+        
+        // Novo sistema de Orçamentos
+        function updateBudgets(expenseCategories) {
+            budgetsContainer.innerHTML = '';
+            
+            if (Object.keys(monthlyBudgets).length === 0) {
+                 budgetsContainer.innerHTML = `<p class="text-center text-gray-500 col-span-full">Ainda não tem orçamentos. Adicione um para começar.</p>`;
+                 return;
+            }
+
+            Object.keys(monthlyBudgets).forEach(category => {
+                const budgeted = monthlyBudgets[category];
+                const spent = expenseCategories[category] || 0;
+                const remaining = budgeted - spent;
+                const percentage = budgeted > 0 ? (spent / budgeted) * 100 : 0;
+
+                const budgetItem = document.createElement('div');
+                budgetItem.className = 'p-4 rounded-xl bg-gray-100 border border-gray-200 flex flex-col justify-between';
+                budgetItem.innerHTML = `
+                    <div class="flex justify-between items-start mb-2">
+                        <span class="font-bold text-gray-800">${category}</span>
+                        <div class="flex gap-2">
+                            <button class="edit-budget-btn text-gray-400 hover:text-indigo-500" data-category="${category}">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                                    <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+                                </svg>
+                            </button>
+                            <button class="delete-budget-btn text-gray-400 hover:text-red-500" data-category="${category}">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm6 0a1 1 0 11-2 0v6a1 1 0 112 0V8z" clip-rule="evenodd" />
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="text-sm text-gray-600 mb-2">
+                        <span>Gasto: €${spent.toFixed(2).replace('.', ',')}</span> / <span>Orçamento: €${budgeted.toFixed(2).replace('.', ',')}</span>
+                    </div>
+                    <div class="budget-bar mb-1">
+                        <div class="budget-fill" style="width: ${Math.min(100, percentage)}%; background-color: ${percentage > 100 ? '#ef4444' : (percentage > 80 ? '#f59e0b' : '#22c55e')};"></div>
+                    </div>
+                    <p class="text-xs text-right ${remaining >= 0 ? 'text-gray-600' : 'text-red-700 font-bold'}">
+                        ${remaining >= 0 ? `Restam €${remaining.toFixed(2).replace('.', ',')}` : `Passou €${Math.abs(remaining).toFixed(2).replace('.', ',')}`}
+                    </p>
+                `;
+                budgetsContainer.appendChild(budgetItem);
+            });
+            saveBudgets();
+
+            document.querySelectorAll('.edit-budget-btn').forEach(button => {
+                button.addEventListener('click', (e) => {
+                    const category = e.currentTarget.dataset.category;
+                    const newBudget = prompt(`Defina um novo orçamento para ${category}:`, monthlyBudgets[category]);
+                    if (newBudget !== null) {
+                        const newBudgetVal = parseFloat(newBudget);
+                        if (!isNaN(newBudgetVal) && newBudgetVal >= 0) {
+                            monthlyBudgets[category] = newBudgetVal;
+                            saveBudgets();
+                            updateUI();
+                        } else {
+                            showMessage("Por favor, insira um valor numérico válido.");
+                        }
+                    }
+                });
+            });
+
+            document.querySelectorAll('.delete-budget-btn').forEach(button => {
+                button.addEventListener('click', (e) => {
+                    const category = e.currentTarget.dataset.category;
+                    if (confirm(`Tem a certeza que quer eliminar o orçamento para "${category}"? Esta ação não pode ser desfeita.`)) {
+                        delete monthlyBudgets[category];
+                        saveBudgets();
+                        updateUI();
+                        showMessage(`O orçamento para "${category}" foi eliminado com sucesso.`);
+                    }
+                });
+            });
+        }
+        
+        function deleteTransaction(id) {
+            transactions = transactions.filter(t => t.id !== parseInt(id));
+            saveTransactions();
+            updateUI();
+            showMessage("Transação removida com sucesso!");
+        }
+
+        function updateCharts(totalReceitas, totalDespesas, expenseCategories) {
+            if (balanceChart) balanceChart.destroy();
+            const balanceCtx = document.getElementById('balanceChart').getContext('2d');
+            balanceChart = new Chart(balanceCtx, {
+                type: 'bar',
+                data: {
+                    labels: ['Entradas', 'Despesas'],
+                    datasets: [{
+                        label: 'Total',
+                        data: [totalReceitas, totalDespesas],
+                        backgroundColor: ['#22c55e', '#ef4444'],
+                        borderRadius: 8
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        y: {
+                            beginAtZero: true
+                        }
+                    },
+                    plugins: {
+                        legend: { display: false }
+                    }
+                }
+            });
+
+            if (expensesChart) expensesChart.destroy();
+            const expensesCtx = document.getElementById('expensesChart').getContext('2d');
+            const labels = Object.keys(expenseCategories);
+            const data = Object.values(expenseCategories);
+            const colors = labels.map((_, i) => `hsl(${(i * 50) % 360}, 70%, 55%)`);
+
+            expensesChart = new Chart(expensesCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        data: data,
+                        backgroundColor: colors,
+                        hoverOffset: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            labels: {
+                                boxWidth: 12
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        transactionForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            
+            const tipo = document.getElementById('tipo').value;
+            const item = document.getElementById('item').value.trim();
+            const valor = parseFloat(document.getElementById('valor').value);
+            const categoria = document.getElementById('categoria').value.trim();
+            const recorrente = document.getElementById('recorrente').checked;
+            
+            if (!item || isNaN(valor) || valor <= 0) {
+                showMessage("Por favor, preencha todos os campos corretamente.");
+                return;
+            }
+
+            const newTransaction = {
+                id: Date.now(), 
+                tipo,
+                item,
+                valor,
+                timestamp: new Date().getTime()
+            };
+
+            if (tipo === 'despesa') {
+                newTransaction.categoria = categoria || 'Outros';
+            }
+
+            if (recorrente) {
+                recurringTransactions.push(newTransaction);
+                saveRecurring();
+                showMessage("Transação adicionada como recorrente!");
+            }
+
+            transactions.unshift(newTransaction);
+            saveTransactions();
+            updateUI();
+            transactionForm.reset();
+        });
+        
+        addBudgetBtn.addEventListener('click', () => {
+            const category = prompt("Insira o nome da nova categoria de orçamento:");
+            if (category) {
+                const initialBudget = prompt(`Insira o orçamento inicial para "${category}" (ex: 150):`);
+                const budgetVal = parseFloat(initialBudget);
+                if (!isNaN(budgetVal) && budgetVal >= 0) {
+                    monthlyBudgets[category] = budgetVal;
+                    saveBudgets();
+                    updateUI();
+                } else {
+                    showMessage("Orçamento inválido. Por favor, insira um valor numérico.");
+                }
+            }
+        });
+
+        function addRecurringTransactions() {
+            if (recurringTransactions.length === 0) return;
+            
+            const today = new Date();
+            const currentMonth = today.getMonth();
+            const currentYear = today.getFullYear();
+            
+            const transactionsAddedThisMonth = transactions.filter(t => {
+                const transactionDate = new Date(t.timestamp);
+                return transactionDate.getMonth() === currentMonth && transactionDate.getFullYear() === currentYear;
+            });
+
+            const recurringToInsert = recurringTransactions.filter(r => 
+                !transactionsAddedThisMonth.some(t => t.item === r.item && t.valor === r.valor && t.tipo === r.tipo)
+            );
+
+            if (recurringToInsert.length > 0) {
+                recurringToInsert.forEach(r => {
+                    const newTransaction = { ...r, id: Date.now() + Math.random() * 1000, timestamp: new Date().getTime() };
+                    transactions.unshift(newTransaction);
+                });
+                saveTransactions();
+                showMessage(`${recurringToInsert.length} transações recorrentes foram adicionadas automaticamente.`);
+            }
+        }
+
+        exportBtn.addEventListener('click', () => {
+            const allData = { transactions, recurringTransactions, monthlyBudgets, investmentGoals };
+            const dataStr = JSON.stringify(allData, null, 2);
+            const blob = new Blob([dataStr], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `financas_backup_${new Date().toISOString().slice(0,10)}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        });
+
+        importFileEl.addEventListener('change', (event) => {
+            const file = event.target.files[0];
+            if (!file) {
+                return;
+            }
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const importedData = JSON.parse(e.target.result);
+                    if (importedData.transactions) transactions = importedData.transactions;
+                    if (importedData.recurringTransactions) recurringTransactions = importedData.recurringTransactions;
+                    if (importedData.monthlyBudgets) monthlyBudgets = importedData.monthlyBudgets;
+                    if (importedData.investmentGoals) investmentGoals = importedData.investmentGoals;
+                    
+                    saveTransactions();
+                    saveRecurring();
+                    saveBudgets();
+                    saveGoals();
+
+                    updateUI();
+                    showMessage("Dados importados com sucesso!");
+                } catch (error) {
+                    console.error("Erro ao importar arquivo:", error);
+                    showMessage("Erro ao importar o arquivo. Verifique se é um arquivo JSON válido.");
+                }
+            };
+            reader.readAsText(file);
+            event.target.value = '';
+        });
+        
+        function displayCurrentDate() {
+            const today = new Date();
+            const options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+            const formattedDate = today.toLocaleDateString('pt-PT', options);
+            currentDateEl.textContent = `Hoje é ${formattedDate.charAt(0).toUpperCase() + formattedDate.slice(1)}`;
+        }
+        
+        function makeEditable(element, id) {
+            const originalText = element.textContent;
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.value = originalText;
+            input.className = 'w-full p-1 font-medium text-gray-800 bg-white border border-indigo-500 rounded-md focus:outline-none';
+            element.replaceWith(input);
+            input.focus();
+
+            const saveEdit = () => {
+                const newText = input.value.trim();
+                if (newText && newText !== originalText) {
+                    const transactionToEdit = transactions.find(t => t.id === parseInt(id));
+                    if (transactionToEdit) {
+                        transactionToEdit.item = newText;
+                        saveTransactions();
+                    }
+                }
+                updateUI();
+            };
+
+            input.addEventListener('blur', saveEdit);
+            input.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    input.blur();
+                }
+            });
+        }
+        
+        // --- Goals Logic ---
+        function updateGoals() {
+            goalsContainer.innerHTML = '';
+
+            if(investmentGoals.length === 0) {
+                goalsContainer.innerHTML = `<p class="text-center text-gray-500 col-span-full">Defina o seu primeiro objetivo de investimento!</p>`;
+                return;
+            }
+
+            investmentGoals.forEach(goal => {
+                const percentage = goal.target > 0 ? (goal.current / goal.target) * 100 : 0;
+                const goalEl = document.createElement('div');
+                goalEl.className = 'p-4 rounded-xl bg-gray-100 border border-gray-200 flex flex-col justify-between';
+                goalEl.innerHTML = `
+                    <div class="flex justify-between items-start mb-2">
+                        <span class="font-bold text-gray-800">${goal.name}</span>
+                        <button class="delete-goal-btn text-gray-400 hover:text-red-500" data-id="${goal.id}">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm6 0a1 1 0 11-2 0v6a1 1 0 112 0V8z" clip-rule="evenodd" /></svg>
+                        </button>
+                    </div>
+                    <div class="text-sm text-gray-600 mb-2">
+                        <span>Poupança: €${goal.current.toFixed(2).replace('.', ',')}</span> / <span>Objetivo: €${goal.target.toFixed(2).replace('.', ',')}</span>
+                    </div>
+                    <div class="budget-bar mb-2">
+                        <div class="budget-fill bg-teal-500" style="width: ${Math.min(100, percentage)}%;"></div>
+                    </div>
+                    <button class="add-funds-btn mt-2 w-full bg-white border border-teal-500 text-teal-600 font-semibold py-1 px-3 rounded-lg hover:bg-teal-50 transition-colors text-xs" data-id="${goal.id}">Adicionar Fundos</button>
+                `;
+                goalsContainer.appendChild(goalEl);
+            });
+
+            document.querySelectorAll('.add-funds-btn').forEach(btn => {
+                btn.addEventListener('click', e => {
+                    const goalId = parseInt(e.target.dataset.id);
+                    const goal = investmentGoals.find(g => g.id === goalId);
+                    const amountStr = prompt(`Quanto quer adicionar a "${goal.name}"?`);
+                    if (amountStr) {
+                        const amount = parseFloat(amountStr);
+                        if (!isNaN(amount) && amount > 0) {
+                            goal.current += amount;
+                            const newTransaction = {
+                                id: Date.now(),
+                                tipo: 'despesa',
+                                item: `Investimento: ${goal.name}`,
+                                valor: amount,
+                                categoria: 'Investimento/Objetivos',
+                                timestamp: new Date().getTime()
+                            };
+                            transactions.unshift(newTransaction);
+                            saveTransactions();
+                            saveGoals();
+                            updateUI();
+                            showMessage(`€${amount.toFixed(2)} adicionados a "${goal.name}"!`);
+                        } else {
+                            showMessage("Por favor, insira um valor numérico válido.");
+                        }
+                    }
+                });
+            });
+
+            document.querySelectorAll('.delete-goal-btn').forEach(btn => {
+                btn.addEventListener('click', e => {
+                    const goalId = parseInt(e.currentTarget.dataset.id);
+                    const goalToDelete = investmentGoals.find(g => g.id === goalId);
+                    if (goalToDelete && confirm(`Tem a certeza que quer eliminar o objetivo "${goalToDelete.name}"? Todos os fundos investidos (€${goalToDelete.current.toFixed(2).replace('.',',')}) serão devolvidos ao seu saldo.`)) {
+                        // Remove associated transactions before deleting the goal
+                        transactions = transactions.filter(t => t.item !== `Investimento: ${goalToDelete.name}`);
+                        saveTransactions();
+
+                        investmentGoals = investmentGoals.filter(g => g.id !== goalId);
+                        saveGoals();
+                        updateUI();
+                        showMessage("Objetivo eliminado e fundos devolvidos com sucesso.");
+                    }
+                });
+            });
+        }
+
+        addGoalBtn.addEventListener('click', () => {
+            const name = prompt("Qual é o nome do seu objetivo?");
+            if (name) {
+                const targetStr = prompt(`Qual é o valor alvo para "${name}"?`);
+                const target = parseFloat(targetStr);
+                if (!isNaN(target) && target > 0) {
+                    const newGoal = {
+                        id: Date.now(),
+                        name: name,
+                        target: target,
+                        current: 0
+                    };
+                    investmentGoals.push(newGoal);
+                    saveGoals();
+                    updateGoals();
+                } else {
+                    showMessage("Por favor, insira um valor alvo numérico válido.");
+                }
+            }
+        });
+
+        // Drag and Drop Logic
+        transactionList.addEventListener('dragstart', (e) => {
+            if (e.target.tagName === 'LI') {
+                draggingItem = e.target;
+                setTimeout(() => e.target.classList.add('dragging'), 0);
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', e.target.dataset.id);
+            }
+        });
+
+        transactionList.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            const afterElement = getDragAfterElement(transactionList, e.clientY);
+            const placeholder = document.querySelector('.drag-placeholder');
+            
+            if (!placeholder) {
+                const newPlaceholder = document.createElement('div');
+                newPlaceholder.className = 'drag-placeholder';
+                transactionList.insertBefore(newPlaceholder, afterElement);
+            } else {
+                transactionList.insertBefore(placeholder, afterElement);
+            }
+        });
+
+        transactionList.addEventListener('dragend', (e) => {
+            if (draggingItem) {
+                draggingItem.classList.remove('dragging');
+            }
+            const placeholder = document.querySelector('.drag-placeholder');
+            if (placeholder) {
+                placeholder.remove();
+            }
+            draggingItem = null;
+        });
+
+        transactionList.addEventListener('drop', (e) => {
+            e.preventDefault();
+            const placeholder = document.querySelector('.drag-placeholder');
+            const draggedId = parseInt(e.dataTransfer.getData('text/plain'));
+            const draggedTransaction = transactions.find(t => t.id === draggedId);
+            
+            if (!draggedTransaction) return;
+
+            const newIndex = Array.from(transactionList.children).indexOf(placeholder);
+
+            transactions = transactions.filter(t => t.id !== draggedId);
+            transactions.splice(newIndex, 0, draggedTransaction);
+            
+            saveTransactions();
+            updateUI();
+        });
+
+        function getDragAfterElement(container, y) {
+            const draggableElements = [...container.querySelectorAll('li:not(.dragging)')];
+
+            return draggableElements.reduce((closest, child) => {
+                const box = child.getBoundingClientRect();
+                const offset = y - box.top - box.height / 2;
+                if (offset < 0 && offset > closest.offset) {
+                    return { offset: offset, element: child };
+                } else {
+                    return closest;
+                }
+            }, { offset: Number.NEGATIVE_INFINITY }).element;
+        }
+
+        // Initialize the app
+        document.addEventListener('DOMContentLoaded', () => {
+            displayCurrentDate();
+            loadData();
+        });
+    </script>
+</body>
+</html>
+
+
