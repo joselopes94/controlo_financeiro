@@ -1,0 +1,1004 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Controlo Financeiro Mensal</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script type="module">
+        // Firebase SDKs
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+        import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app-check.js";
+
+        // Global variables provided by the environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let app, auth, db, userId, unsubscribeFromData;
+
+        // Custom logging for debugging
+        setLogLevel('debug');
+        
+        // --- UI Elements ---
+        const loginScreen = document.getElementById('login-screen');
+        const appScreen = document.getElementById('app-screen');
+        const loginGoogleBtn = document.getElementById('login-google-btn');
+        const loginAnonBtn = document.getElementById('login-anon-btn');
+        const logoutBtn = document.getElementById('logout-btn');
+        const userIdDisplay = document.getElementById('user-id-display');
+
+        // Main app UI elements
+        const transactionForm = document.getElementById('transaction-form');
+        const transactionList = document.getElementById('transaction-list');
+        const totalReceitasEl = document.getElementById('total-receitas');
+        const totalDespesasEl = document.getElementById('total-despesas');
+        const saldoFinalEl = document.getElementById('saldo-final');
+        const balanceCard = document.getElementById('balance-card');
+        const importFileEl = document.getElementById('import-file');
+        const exportBtn = document.getElementById('export-btn');
+        const budgetsContainer = document.getElementById('budgets-container');
+        const addBudgetBtn = document.getElementById('add-budget-btn');
+        const goalsContainer = document.getElementById('goals-container');
+        const addGoalBtn = document.getElementById('add-goal-btn');
+        const clearBtn = document.getElementById('clear-btn');
+        
+        const modal = document.getElementById('modal');
+        const modalMessage = document.getElementById('modal-message');
+        const modalCloseButton = document.getElementById('modal-close-button');
+        const modalConfirmButton = document.getElementById('modal-confirm-button');
+        
+        let transactions = [];
+        let recurringTransactions = [];
+        let monthlyBudgets = {};
+        let investmentGoals = [];
+        
+        let balanceChart = null;
+        let expensesChart = null;
+
+        // --- Firebase Functions ---
+        const initFirebase = async () => {
+            if (Object.keys(firebaseConfig).length === 0) {
+                console.error("Firebase config is missing. App cannot run.");
+                showMessage("Erro de configuração. Não foi possível iniciar a app.");
+                return;
+            }
+            app = initializeApp(firebaseConfig);
+            auth = getAuth(app);
+            db = getFirestore(app);
+
+            // Sign in using the custom token if provided, otherwise anonymously
+            try {
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                console.error("Firebase Auth error:", error);
+                showMessage("Erro de autenticação: " + error.message);
+            }
+
+            // Authentication state listener
+            onAuthStateChanged(auth, (user) => {
+                if (user) {
+                    userId = user.uid;
+                    loginScreen.classList.add('hidden');
+                    appScreen.classList.remove('hidden');
+                    userIdDisplay.textContent = `ID do Utilizador: ${userId}`;
+                    console.log("User is signed in with UID:", userId);
+                    loadDataFromFirestore();
+                } else {
+                    console.log("User is signed out.");
+                    appScreen.classList.add('hidden');
+                    loginScreen.classList.remove('hidden');
+                    if (unsubscribeFromData) {
+                        unsubscribeFromData();
+                    }
+                }
+            });
+        };
+
+        const saveToFirestore = async () => {
+            if (!db || !userId) {
+                console.error("Firestore ou User ID não estão disponíveis.");
+                return;
+            }
+            const docRef = doc(db, `artifacts/${appId}/users/${userId}/data`, 'financial_data');
+            const dataToSave = {
+                transactions,
+                recurringTransactions,
+                monthlyBudgets,
+                investmentGoals,
+            };
+            try {
+                await setDoc(docRef, dataToSave, { merge: true });
+                console.log("Dados guardados no Firestore com sucesso!");
+            } catch (error) {
+                console.error("Erro ao guardar dados no Firestore:", error);
+                showMessage("Erro ao guardar os dados. Verifique a sua ligação.");
+            }
+        };
+
+        const loadDataFromFirestore = () => {
+            if (unsubscribeFromData) {
+                unsubscribeFromData();
+            }
+
+            if (!db || !userId) {
+                console.error("Firestore ou User ID não estão disponíveis para carregar dados.");
+                return;
+            }
+            const docRef = doc(db, `artifacts/${appId}/users/${userId}/data`, 'financial_data');
+            
+            // Listen for real-time changes
+            unsubscribeFromData = onSnapshot(docRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    transactions = data.transactions || [];
+                    recurringTransactions = data.recurringTransactions || [];
+                    monthlyBudgets = data.monthlyBudgets || {};
+                    investmentGoals = data.investmentGoals || [];
+                    console.log("Dados carregados do Firestore.");
+                } else {
+                    // Document doesn't exist, create an empty one
+                    console.log("Nenhum dado encontrado para o utilizador. Criando um novo documento...");
+                    saveToFirestore();
+                }
+                updateUI();
+            }, (error) => {
+                console.error("Erro ao carregar dados do Firestore:", error);
+                showMessage("Erro ao carregar os dados. Tente novamente.");
+            });
+        };
+
+        // --- Auth UI Listeners ---
+        loginGoogleBtn.addEventListener('click', async () => {
+            const provider = new GoogleAuthProvider();
+            try {
+                await signInWithPopup(auth, provider);
+            } catch (error) {
+                console.error("Google login error:", error);
+                showMessage("Erro ao entrar com a Google: " + error.message);
+            }
+        });
+
+        loginAnonBtn.addEventListener('click', async () => {
+            try {
+                await signInAnonymously(auth);
+            } catch (error) {
+                console.error("Anonymous login error:", error);
+                showMessage("Erro ao entrar de forma anónima: " + error.message);
+            }
+        });
+        
+        logoutBtn.addEventListener('click', async () => {
+            try {
+                await signOut(auth);
+                showMessage("Sessão terminada com sucesso.");
+            } catch (error) {
+                console.error("Logout error:", error);
+                showMessage("Erro ao terminar a sessão: " + error.message);
+            }
+        });
+
+        // --- Modal Functions (same as previous version) ---
+        function showMessage(message) {
+            modalMessage.textContent = message;
+            modal.classList.remove('hidden');
+            modalCloseButton.classList.remove('hidden');
+            modalConfirmButton.classList.add('hidden');
+        }
+
+        modalCloseButton.addEventListener('click', () => {
+            modal.classList.add('hidden');
+        });
+        
+        function showConfirmationModal(message, onConfirm) {
+            modalMessage.textContent = message;
+            modalCloseButton.textContent = 'Cancelar';
+            modalCloseButton.onclick = () => {
+                modal.classList.add('hidden');
+                modalCloseButton.textContent = 'OK';
+                modalCloseButton.onclick = () => modal.classList.add('hidden');
+            };
+            modalConfirmButton.classList.remove('hidden');
+            modalConfirmButton.onclick = async () => {
+                modal.classList.add('hidden');
+                modalCloseButton.textContent = 'OK';
+                modalCloseButton.onclick = () => modal.classList.add('hidden');
+                await onConfirm();
+            };
+            modal.classList.remove('hidden');
+        }
+
+        // --- Main App Logic (Adapted for Firestore) ---
+        function getExpenseCategories() {
+            const expenseCategories = {};
+            transactions.forEach(t => {
+                const valor = parseFloat(t.valor);
+                if (t.tipo === 'despesa') {
+                    const categoria = t.categoria || 'Outros';
+                    expenseCategories[categoria] = (expenseCategories[categoria] || 0) + valor;
+                }
+            });
+            return expenseCategories;
+        }
+
+        function updateUI() {
+            let totalReceitas = 0;
+            let totalDespesas = 0;
+            const expenseCategories = getExpenseCategories();
+
+            transactionList.innerHTML = '';
+            
+            transactions.forEach(t => {
+                const valor = parseFloat(t.valor);
+                if (t.tipo === 'receita') {
+                    totalReceitas += valor;
+                } else {
+                    totalDespesas += valor;
+                }
+                
+                const li = document.createElement('li');
+                li.className = `flex justify-between items-center p-4 rounded-xl shadow-sm transaction-item ${t.tipo === 'receita' ? 'bg-green-50' : 'bg-red-50'}`;
+                li.setAttribute('draggable', true);
+                li.dataset.id = t.id;
+                
+                li.addEventListener('dragstart', (e) => {
+                    e.target.classList.add('dragging');
+                    e.dataTransfer.setData('text/plain', e.target.dataset.id);
+                });
+
+                li.addEventListener('dragend', (e) => {
+                    e.target.classList.remove('dragging');
+                    const placeholder = document.querySelector('.drag-placeholder');
+                    if (placeholder) {
+                        placeholder.remove();
+                    }
+                });
+                
+                const spanItem = document.createElement('span');
+                spanItem.className = 'font-semibold text-gray-800 editable-item';
+                spanItem.textContent = t.item;
+                
+                const divDetails = document.createElement('div');
+                divDetails.className = 'flex items-center gap-4';
+                
+                const spanValor = document.createElement('span');
+                spanValor.className = `font-bold ${t.tipo === 'receita' ? 'text-income' : 'text-expense'} editable-item`;
+                spanValor.textContent = `${t.tipo === 'receita' ? '+' : '-'}€${valor.toFixed(2).replace('.', ',')}`;
+
+                const buttonEdit = document.createElement('button');
+                buttonEdit.className = 'edit-btn text-gray-400 hover:text-blue-500 transition-colors p-1 rounded-full';
+                buttonEdit.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M7 7h-1a2 2 0 0 0 -2 2v9a2 2 0 0 0 2 2h9a2 2 0 0 0 2 -2v-1" /><path d="M20.385 6.585a2.1 2.1 0 0 0 -2.97 -2.97l-8.415 8.385v3h3l8.385 -8.415z" /><path d="M16 5l3 3" />
+                </svg>`;
+
+                const buttonRemove = document.createElement('button');
+                buttonRemove.className = 'delete-btn text-gray-400 hover:text-red-500 transition-colors p-1 rounded-full';
+                buttonRemove.dataset.id = t.id;
+                buttonRemove.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>`;
+                
+                spanItem.addEventListener('click', () => { makeEditable(spanItem, t.id, 'item'); });
+                spanValor.addEventListener('click', () => { makeEditable(spanValor, t.id, 'valor'); });
+
+                divDetails.appendChild(spanValor);
+                divDetails.appendChild(buttonEdit);
+                divDetails.appendChild(buttonRemove);
+
+                li.appendChild(spanItem);
+                li.appendChild(divDetails);
+                transactionList.appendChild(li);
+                
+                buttonRemove.addEventListener('click', () => {
+                    deleteTransaction(t.id);
+                });
+
+                buttonEdit.addEventListener('click', () => {
+                    if (document.activeElement && document.activeElement.tagName === 'INPUT') {
+                        return;
+                    }
+                    makeEditable(spanItem, t.id, 'item');
+                });
+            });
+            
+            const saldo = totalReceitas - totalDespesas;
+            
+            totalReceitasEl.textContent = `€${totalReceitas.toFixed(2).replace('.', ',')}`;
+            totalDespesasEl.textContent = `€${totalDespesas.toFixed(2).replace('.', ',')}`;
+            saldoFinalEl.textContent = `€${saldo.toFixed(2).replace('.', ',')}`;
+            
+            balanceCard.classList.remove('bg-white');
+            balanceCard.classList.remove('bg-balance-positive', 'bg-balance-negative');
+            if (saldo > 0) {
+                balanceCard.classList.add('bg-balance-positive');
+                saldoFinalEl.classList.add('text-income');
+                saldoFinalEl.classList.remove('text-expense', 'text-gray-900');
+            } else if (saldo < 0) {
+                balanceCard.classList.add('bg-balance-negative');
+                saldoFinalEl.classList.add('text-expense');
+                saldoFinalEl.classList.remove('text-income', 'text-gray-900');
+            } else {
+                balanceCard.classList.add('bg-white');
+                saldoFinalEl.classList.remove('text-income', 'text-expense');
+                saldoFinalEl.classList.add('text-gray-900');
+            }
+
+            updateCharts(totalReceitas, totalDespesas, expenseCategories);
+            updateBudgets(expenseCategories);
+            updateGoals();
+        }
+        
+        function deleteTransaction(id) {
+            transactions = transactions.filter(t => t.id !== id);
+            saveToFirestore();
+            showMessage("Transação removida com sucesso!");
+        }
+
+        function updateCharts(totalReceitas, totalDespesas, expenseCategories) {
+            if (balanceChart) balanceChart.destroy();
+            const balanceCtx = document.getElementById('balanceChart').getContext('2d');
+            balanceChart = new Chart(balanceCtx, {
+                type: 'bar',
+                data: {
+                    labels: ['Entradas', 'Despesas'],
+                    datasets: [{
+                        label: 'Total',
+                        data: [totalReceitas, totalDespesas],
+                        backgroundColor: ['#10b981', '#ef4444'],
+                        borderRadius: 8
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        y: { beginAtZero: true, grid: { display: false } },
+                        x: { grid: { display: false } }
+                    },
+                    plugins: { legend: { display: false } }
+                }
+            });
+
+            if (expensesChart) expensesChart.destroy();
+            const expensesCtx = document.getElementById('expensesChart').getContext('2d');
+            const labels = Object.keys(expenseCategories);
+            const data = Object.values(expenseCategories);
+            const colors = labels.map((_, i) => `hsl(${(i * 50) % 360}, 70%, 55%)`);
+
+            expensesChart = new Chart(expensesCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        data: data,
+                        backgroundColor: colors,
+                        hoverOffset: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            labels: { boxWidth: 12 }
+                        }
+                    }
+                }
+            });
+        }
+
+        transactionForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            
+            const tipo = document.getElementById('tipo').value;
+            const item = document.getElementById('item').value.trim();
+            const valor = parseFloat(document.getElementById('valor').value);
+            const categoria = document.getElementById('categoria').value.trim();
+            const recorrente = document.getElementById('recorrente').checked;
+            
+            if (!item || isNaN(valor) || valor <= 0) {
+                showMessage("Por favor, preencha todos os campos corretamente.");
+                return;
+            }
+
+            const newTransaction = {
+                id: Date.now(),
+                tipo,
+                item,
+                valor,
+                timestamp: new Date().getTime()
+            };
+
+            if (tipo === 'despesa') {
+                newTransaction.categoria = categoria || 'Outros';
+            }
+
+            if (recorrente) {
+                recurringTransactions.push(newTransaction);
+            }
+
+            transactions.push(newTransaction);
+            saveToFirestore();
+            transactionForm.reset();
+        });
+        
+        addBudgetBtn.addEventListener('click', () => {
+            const category = prompt("Insira o nome da nova categoria de orçamento:");
+            if (category) {
+                const initialBudget = prompt(`Insira o orçamento inicial para "${category}" (ex: 150):`);
+                const budgetVal = parseFloat(initialBudget);
+                if (!isNaN(budgetVal) && budgetVal >= 0) {
+                    monthlyBudgets[category] = budgetVal;
+                    saveToFirestore();
+                } else {
+                    showMessage("Orçamento inválido. Por favor, insira um valor numérico.");
+                }
+            }
+        });
+        
+        function updateBudgets(expenseCategories) {
+            budgetsContainer.innerHTML = '';
+            
+            if (Object.keys(monthlyBudgets).length === 0) {
+                 budgetsContainer.innerHTML = `<p class="text-center text-gray-500 col-span-full py-4">Ainda não tem orçamentos. Adicione um para começar.</p>`;
+                 return;
+            }
+
+            Object.keys(monthlyBudgets).forEach(category => {
+                const budgeted = monthlyBudgets[category];
+                const spent = expenseCategories[category] || 0;
+                const remaining = budgeted - spent;
+                const percentage = budgeted > 0 ? (spent / budgeted) * 100 : 0;
+
+                const budgetItem = document.createElement('div');
+                budgetItem.className = 'p-4 rounded-xl bg-gray-50 border border-gray-200 flex flex-col justify-between shadow-sm';
+                budgetItem.innerHTML = `
+                    <div class="flex justify-between items-start mb-2">
+                        <span class="font-bold text-gray-800">${category}</span>
+                        <div class="flex gap-2">
+                            <button class="edit-budget-btn text-gray-400 hover:text-blue-500" data-category="${category}">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M7 7h-1a2 2 0 0 0 -2 2v9a2 2 0 0 0 2 2h9a2 2 0 0 0 2 -2v-1" /><path d="M20.385 6.585a2.1 2.1 0 0 0 -2.97 -2.97l-8.415 8.385v3h3l8.385 -8.415z" /><path d="M16 5l3 3" />
+                                </svg>
+                            </button>
+                            <button class="delete-budget-btn text-gray-400 hover:text-red-500" data-category="${category}">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                                    <line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="text-sm text-gray-600 mb-2">
+                        <span>Gasto: €${spent.toFixed(2).replace('.', ',')}</span> / <span>Orçamento: €${budgeted.toFixed(2).replace('.', ',')}</span>
+                    </div>
+                    <div class="budget-bar mb-1">
+                        <div class="budget-fill" style="width: ${Math.min(100, percentage)}%; background-color: ${percentage > 100 ? '#ef4444' : (percentage > 80 ? '#f59e0b' : '#10b981')};"></div>
+                    </div>
+                    <p class="text-xs text-right ${remaining >= 0 ? 'text-gray-600' : 'text-red-700 font-bold'}">
+                        ${remaining >= 0 ? `Restam €${remaining.toFixed(2).replace('.', ',')}` : `Passou €${Math.abs(remaining).toFixed(2).replace('.', ',')}`}
+                    </p>
+                `;
+                budgetsContainer.appendChild(budgetItem);
+            });
+
+            document.querySelectorAll('.edit-budget-btn').forEach(button => {
+                button.addEventListener('click', (e) => {
+                    const category = e.currentTarget.dataset.category;
+                    const newBudget = prompt(`Defina um novo orçamento para ${category}:`, monthlyBudgets[category]);
+                    if (newBudget !== null) {
+                        const newBudgetVal = parseFloat(newBudget);
+                        if (!isNaN(newBudgetVal) && newBudgetVal >= 0) {
+                            monthlyBudgets[category] = newBudgetVal;
+                            saveToFirestore();
+                        } else {
+                            showMessage("Por favor, insira um valor numérico válido.");
+                        }
+                    }
+                });
+            });
+
+            document.querySelectorAll('.delete-budget-btn').forEach(button => {
+                button.addEventListener('click', (e) => {
+                    const category = e.currentTarget.dataset.category;
+                    showConfirmationModal(`Tem a certeza que quer eliminar o orçamento para "${category}"?`, () => {
+                        delete monthlyBudgets[category];
+                        saveToFirestore();
+                        showMessage(`O orçamento para "${category}" foi eliminado com sucesso.`);
+                    });
+                });
+            });
+        }
+        
+        function addRecurringTransactions() {
+            // This is handled by Firestore now, we don't need to check localStorage
+            // The first load will handle this.
+        }
+
+        exportBtn.addEventListener('click', () => {
+            const allData = { transactions, recurringTransactions, monthlyBudgets, investmentGoals };
+            const dataStr = JSON.stringify(allData, null, 2);
+            const blob = new Blob([dataStr], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `financas_backup_${new Date().toISOString().slice(0,10)}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        });
+
+        importFileEl.addEventListener('change', (event) => {
+            const file = event.target.files[0];
+            if (!file) {
+                return;
+            }
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const importedData = JSON.parse(e.target.result);
+                    transactions = importedData.transactions || [];
+                    recurringTransactions = importedData.recurringTransactions || [];
+                    monthlyBudgets = importedData.monthlyBudgets || {};
+                    investmentGoals = importedData.investmentGoals || [];
+                    saveToFirestore();
+                    showMessage("Dados importados com sucesso!");
+                } catch (error) {
+                    console.error("Erro ao importar arquivo:", error);
+                    showMessage("Erro ao importar o arquivo. Verifique se é um arquivo JSON válido.");
+                }
+            };
+            reader.readAsText(file);
+            event.target.value = '';
+        });
+        
+        function displayCurrentDate() {
+            const today = new Date();
+            const options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+            const formattedDate = today.toLocaleDateString('pt-PT', options);
+            document.getElementById('current-date').textContent = `Hoje é ${formattedDate.charAt(0).toUpperCase() + formattedDate.slice(1)}`;
+        }
+        
+        function makeEditable(element, id, field) {
+            const originalText = element.textContent.replace('+', '').replace('-', '').replace('€', '').replace(',', '.').trim();
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.value = originalText;
+            input.className = 'p-1 font-semibold text-gray-800 bg-white border border-blue-500 rounded-md focus:outline-none w-full';
+            
+            element.replaceWith(input);
+            input.focus();
+
+            const saveEdit = () => {
+                const newText = input.value.trim();
+                let newValue = newText;
+                if (field === 'valor') {
+                    newValue = parseFloat(newText.replace(',', '.'));
+                    if (isNaN(newValue) || newValue <= 0) {
+                        showMessage("Valor inválido. A transação não foi atualizada.");
+                        const span = document.createElement('span');
+                        span.textContent = originalText;
+                        span.className = element.className;
+                        input.replaceWith(span);
+                        return;
+                    }
+                }
+                const index = transactions.findIndex(t => t.id === id);
+                if (index !== -1) {
+                    transactions[index][field] = newValue;
+                    saveToFirestore();
+                }
+            };
+
+            input.addEventListener('blur', saveEdit);
+            input.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    input.blur();
+                }
+            });
+        }
+        
+        function updateGoals() {
+            goalsContainer.innerHTML = '';
+            if(investmentGoals.length === 0) {
+                goalsContainer.innerHTML = `<p class="text-center text-gray-500 col-span-full py-4">Defina o seu primeiro objetivo de poupança!</p>`;
+                return;
+            }
+
+            investmentGoals.forEach(goal => {
+                const percentage = goal.target > 0 ? (goal.current / goal.target) * 100 : 0;
+                const goalEl = document.createElement('div');
+                goalEl.className = 'p-4 rounded-xl bg-gray-50 border border-gray-200 flex flex-col justify-between shadow-sm';
+                goalEl.innerHTML = `
+                    <div class="flex justify-between items-start mb-2">
+                        <span class="font-bold text-gray-800">${goal.name}</span>
+                        <div class="flex gap-2">
+                            <button class="edit-goal-btn text-gray-400 hover:text-blue-500" data-id="${goal.id}">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M7 7h-1a2 2 0 0 0 -2 2v9a2 2 0 0 0 2 2h9a2 2 0 0 0 2 -2v-1" /><path d="M20.385 6.585a2.1 2.1 0 0 0 -2.97 -2.97l-8.415 8.385v3h3l8.385 -8.415z" /><path d="M16 5l3 3" />
+                                </svg>
+                            </button>
+                            <button class="delete-goal-btn text-gray-400 hover:text-red-500" data-id="${goal.id}">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                                    <line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="text-sm text-gray-600 mb-2">
+                        <span>Poupança: €${goal.current.toFixed(2).replace('.', ',')}</span> / <span>Objetivo: €${goal.target.toFixed(2).replace('.', ',')}</span>
+                    </div>
+                    <div class="budget-bar mb-2">
+                        <div class="budget-fill bg-teal-500" style="width: ${Math.min(100, percentage)}%;"></div>
+                    </div>
+                    <button class="add-funds-btn mt-2 w-full bg-blue-500 text-white font-semibold py-2 px-3 rounded-lg hover:bg-blue-600 transition-colors text-sm" data-id="${goal.id}">Adicionar Fundos</button>
+                `;
+                goalsContainer.appendChild(goalEl);
+            });
+            document.querySelectorAll('.add-funds-btn').forEach(btn => {
+                btn.addEventListener('click', e => {
+                    const goalId = parseInt(e.target.dataset.id);
+                    const goal = investmentGoals.find(g => g.id === goalId);
+                    const amountStr = prompt(`Quanto quer adicionar a "${goal.name}"?`);
+                    if (amountStr) {
+                        const amount = parseFloat(amountStr.replace(',', '.'));
+                        if (!isNaN(amount) && amount > 0) {
+                            const newTransaction = {
+                                id: Date.now() + Math.random(),
+                                tipo: 'despesa',
+                                item: `Poupança: ${goal.name}`,
+                                valor: amount,
+                                categoria: 'Poupança/Objetivos',
+                                timestamp: new Date().getTime()
+                            };
+                            transactions.push(newTransaction);
+                            const goalIndex = investmentGoals.findIndex(g => g.id === goalId);
+                            investmentGoals[goalIndex].current += amount;
+                            saveToFirestore();
+                            showMessage(`€${amount.toFixed(2).replace('.', ',')} adicionados a "${goal.name}"!`);
+                        } else {
+                            showMessage("Por favor, insira um valor numérico válido.");
+                        }
+                    }
+                });
+            });
+            document.querySelectorAll('.delete-goal-btn').forEach(btn => {
+                btn.addEventListener('click', e => {
+                    const goalId = parseInt(e.currentTarget.dataset.id);
+                    const goalToDelete = investmentGoals.find(g => g.id === goalId);
+                    if (goalToDelete) {
+                        showConfirmationModal(`Tem a certeza que quer eliminar o objetivo "${goalToDelete.name}"? Todos os fundos poupados (€${goalToDelete.current.toFixed(2).replace('.',',')}) serão devolvidos ao seu saldo.`, () => {
+                            if (goalToDelete.current > 0) {
+                                transactions.push({
+                                    id: Date.now() + Math.random(),
+                                    tipo: 'receita',
+                                    item: `Fundo devolvido: ${goalToDelete.name}`,
+                                    valor: goalToDelete.current,
+                                    categoria: 'Devolução',
+                                    timestamp: new Date().getTime(),
+                                });
+                            }
+                            investmentGoals = investmentGoals.filter(g => g.id !== goalId);
+                            saveToFirestore();
+                            showMessage("Objetivo eliminado e fundos devolvidos com sucesso.");
+                        });
+                    }
+                });
+            });
+            document.querySelectorAll('.edit-goal-btn').forEach(btn => {
+                btn.addEventListener('click', e => {
+                    const goalId = parseInt(e.currentTarget.dataset.id);
+                    const goalToEdit = investmentGoals.find(g => g.id === goalId);
+                    if (goalToEdit) {
+                        const newName = prompt("Insira um novo nome para o objetivo:", goalToEdit.name);
+                        const newTargetStr = prompt("Insira o novo valor alvo:", goalToEdit.target);
+                        const newTarget = parseFloat(newTargetStr);
+
+                        if (newName && !isNaN(newTarget) && newTarget > 0) {
+                             const goalIndex = investmentGoals.findIndex(g => g.id === goalId);
+                             investmentGoals[goalIndex].name = newName;
+                             investmentGoals[goalIndex].target = newTarget;
+                             saveToFirestore();
+                             showMessage("Objetivo atualizado com sucesso!");
+                        } else {
+                            showMessage("Por favor, insira valores válidos.");
+                        }
+                    }
+                });
+            });
+        }
+        addGoalBtn.addEventListener('click', () => {
+            const name = prompt("Qual é o nome do seu objetivo?");
+            if (name) {
+                const targetStr = prompt(`Qual é o valor alvo para "${name}"?`);
+                const target = parseFloat(targetStr);
+                if (!isNaN(target) && target > 0) {
+                    const newGoal = {
+                        id: Date.now(),
+                        name: name,
+                        target: target,
+                        current: 0
+                    };
+                    investmentGoals.push(newGoal);
+                    saveToFirestore();
+                } else {
+                    showMessage("Por favor, insira um valor alvo numérico válido.");
+                }
+            }
+        });
+
+        clearBtn.addEventListener('click', () => {
+            showConfirmationModal("Tem a certeza que quer limpar todos os dados? Esta ação não pode ser desfeita.", clearAllData);
+        });
+
+        function clearAllData() {
+            transactions = [];
+            recurringTransactions = [];
+            monthlyBudgets = {};
+            investmentGoals = [];
+            saveToFirestore(); // Save empty data to clear the Firestore document
+            showMessage("Todos os dados foram eliminados com sucesso!");
+        }
+
+        function getDragAfterElement(container, y) {
+            const draggableElements = [...container.querySelectorAll('.transaction-item:not(.dragging)')];
+
+            return draggableElements.reduce((closest, child) => {
+                const box = child.getBoundingClientRect();
+                const offset = y - box.top - box.height / 2;
+                if (offset < 0 && offset > closest.offset) {
+                    return { offset: offset, element: child };
+                } else {
+                    return closest;
+                }
+            }, { offset: Number.NEGATIVE_INFINITY }).element;
+        }
+
+        // Drag and Drop Logic
+        transactionList.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            const dragging = document.querySelector('.dragging');
+            const afterElement = getDragAfterElement(transactionList, e.clientY);
+            const placeholder = document.querySelector('.drag-placeholder') || document.createElement('div');
+            if (!placeholder.classList.contains('drag-placeholder')) {
+                placeholder.classList.add('drag-placeholder');
+            }
+
+            if (afterElement == null) {
+                if (placeholder.parentNode !== transactionList) {
+                    transactionList.appendChild(placeholder);
+                }
+            } else {
+                transactionList.insertBefore(placeholder, afterElement);
+            }
+            if (dragging) {
+                if (placeholder.parentNode === transactionList) {
+                    transactionList.insertBefore(dragging, placeholder.nextSibling);
+                }
+            }
+        });
+
+        transactionList.addEventListener('drop', (e) => {
+            e.preventDefault();
+            const placeholder = document.querySelector('.drag-placeholder');
+            if (!placeholder) return;
+
+            const draggedId = parseInt(e.dataTransfer.getData('text/plain'));
+            const draggedElement = document.querySelector(`li[data-id='${draggedId}']`);
+
+            if (!draggedElement) return;
+
+            const newIndex = Array.from(transactionList.children).indexOf(placeholder);
+            const transactionIndex = transactions.findIndex(t => t.id === draggedId);
+            
+            if (transactionIndex > -1) {
+                const [draggedTransaction] = transactions.splice(transactionIndex, 1);
+                transactions.splice(newIndex, 0, draggedTransaction);
+                saveToFirestore();
+            }
+        });
+
+        document.addEventListener('DOMContentLoaded', () => {
+            displayCurrentDate();
+            initFirebase();
+        });
+    </script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f0f4f8; /* Cinza claro suave */
+        }
+        .container {
+            max-width: 900px;
+        }
+        .card {
+            border-radius: 1.5rem;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05), 0 10px 15px rgba(0, 0, 0, 0.1);
+        }
+        .text-income { color: #10b981; } /* Verde esmeralda */
+        .text-expense { color: #ef4444; } /* Vermelho */
+        .bg-income { background-color: #d1fae5; }
+        .bg-expense { background-color: #fee2e2; }
+        .bg-balance-positive { background-color: #d1fae5; }
+        .bg-balance-negative { background-color: #fecaca; }
+        .drag-placeholder {
+            height: 4rem;
+            background-color: #e2e8f0;
+            border: 2px dashed #94a3b8;
+            border-radius: 0.5rem;
+            margin-bottom: 0.75rem;
+            transition: all 0.2s ease;
+        }
+        .dragging {
+            opacity: 0.6;
+            transform: scale(0.98);
+        }
+        .transaction-item {
+            cursor: move;
+            transition: all 0.2s ease-in-out;
+        }
+        .transaction-item:hover {
+            transform: translateY(-2px);
+        }
+        .editable-item {
+            cursor: pointer;
+            transition: color 0.2s ease;
+        }
+        .editable-item:hover {
+            color: #4a5568;
+        }
+        .budget-bar {
+            height: 8px;
+            border-radius: 9999px;
+            background-color: #e5e7eb;
+            overflow: hidden;
+        }
+        .budget-fill {
+            height: 100%;
+            transition: width 0.5s ease-in-out;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen flex flex-col items-center p-4 sm:p-6 text-gray-800">
+
+    <!-- Login Screen -->
+    <div id="login-screen" class="fixed inset-0 bg-gray-100 flex justify-center items-center p-4 z-50">
+        <div class="bg-white card p-8 sm:p-12 w-full max-w-md text-center">
+            <h1 class="text-3xl font-extrabold text-gray-900 mb-6">Bem-vindo(a)</h1>
+            <p class="text-gray-600 mb-8">Faça login para guardar os seus dados financeiros de forma segura.</p>
+            <div class="space-y-4">
+                <button id="login-google-btn" class="w-full bg-white border border-gray-300 rounded-xl py-3 px-4 flex items-center justify-center text-sm font-semibold text-gray-700 shadow-sm hover:bg-gray-50 transition-colors">
+                    <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" class="w-5 h-5 mr-3" alt="Google icon">
+                    Entrar com a Google
+                </button>
+                <button id="login-anon-btn" class="w-full bg-blue-600 text-white font-semibold py-3 px-4 rounded-xl shadow-sm hover:bg-blue-700 transition-colors">
+                    Entrar de forma Anónima
+                </button>
+            </div>
+            <p class="mt-4 text-xs text-gray-400">Pode sempre fazer login com a Google mais tarde para guardar os seus dados.</p>
+        </div>
+    </div>
+
+    <!-- Main App Screen (hidden by default) -->
+    <div id="app-screen" class="container w-full bg-white card p-6 sm:p-10 mb-8 hidden">
+        <div class="flex justify-between items-start mb-6">
+            <h1 class="text-3xl sm:text-4xl font-extrabold text-gray-900 text-center sm:text-left">Controlo Financeiro</h1>
+            <button id="logout-btn" class="bg-gray-200 text-gray-700 font-medium py-2 px-4 rounded-lg hover:bg-gray-300 transition-colors text-sm">Sair</button>
+        </div>
+        <p id="user-id-display" class="text-sm text-gray-500 mb-6 text-center sm:text-left"></p>
+        
+        <!-- Saldo Geral Cards -->
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8 text-center">
+            <div class="p-6 rounded-2xl bg-white shadow-md">
+                <p class="text-sm font-semibold text-gray-500">Total de Entradas</p>
+                <p id="total-receitas" class="text-3xl font-bold text-income mt-2">€0,00</p>
+            </div>
+            <div class="p-6 rounded-2xl bg-white shadow-md">
+                <p class="text-sm font-semibold text-gray-500">Total de Despesas</p>
+                <p id="total-despesas" class="text-3xl font-bold text-expense mt-2">€0,00</p>
+            </div>
+            <div id="balance-card" class="p-6 rounded-2xl bg-white shadow-md">
+                <p class="text-sm font-semibold text-gray-500">Saldo Final</p>
+                <p id="saldo-final" class="text-3xl font-bold mt-2">€0,00</p>
+            </div>
+        </div>
+
+        <!-- Ações e Data -->
+        <div class="flex justify-between items-center mb-6 flex-col sm:flex-row text-center sm:text-left">
+            <span id="current-date" class="text-sm text-gray-500 mb-2 sm:mb-0"></span>
+            <div class="flex gap-2">
+                <button id="export-btn" class="bg-gray-200 text-gray-700 font-medium py-2 px-4 rounded-lg hover:bg-gray-300 transition-colors text-sm">Exportar</button>
+                <label for="import-file" class="bg-gray-200 text-gray-700 font-medium py-2 px-4 rounded-lg hover:bg-gray-300 transition-colors text-sm cursor-pointer">Importar</label>
+                <input type="file" id="import-file" accept=".json" class="hidden">
+                <button id="clear-btn" class="bg-red-500 text-white font-medium py-2 px-4 rounded-lg hover:bg-red-600 transition-colors text-sm">Limpar Dados</button>
+            </div>
+        </div>
+
+        <!-- Gráficos -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
+            <div class="bg-white rounded-3xl p-6 shadow-sm">
+                <h2 class="text-lg font-bold text-gray-800 mb-4 text-center">Visão Geral</h2>
+                <canvas id="balanceChart"></canvas>
+            </div>
+            <div class="bg-white rounded-3xl p-6 shadow-sm">
+                <h2 class="text-lg font-bold text-gray-800 mb-4 text-center">Despesas por Categoria</h2>
+                <canvas id="expensesChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Objetivos e Orçamentos -->
+        <div class="bg-white p-6 rounded-3xl shadow-sm mb-8">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-xl font-bold text-gray-800">Orçamento Mensal</h2>
+                <button id="add-budget-btn" class="bg-teal-600 text-white font-medium py-2 px-4 rounded-lg hover:bg-teal-700 transition-colors text-sm">Adicionar Orçamento</button>
+            </div>
+            <div id="budgets-container" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            </div>
+        </div>
+
+        <div class="bg-white p-6 rounded-3xl shadow-sm mb-8">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-xl font-bold text-gray-800">Objetivos de Poupança</h2>
+                <button id="add-goal-btn" class="bg-teal-600 text-white font-medium py-2 px-4 rounded-lg hover:bg-teal-700 transition-colors text-sm">Adicionar Objetivo</button>
+            </div>
+            <div id="goals-container" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            </div>
+        </div>
+        
+        <!-- Formulário de Transação -->
+        <form id="transaction-form" class="bg-white p-6 rounded-3xl shadow-sm mb-8">
+            <h2 class="text-lg font-bold text-gray-800 mb-4">Adicionar Nova Transação</h2>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div class="flex flex-col">
+                    <label for="tipo" class="font-medium text-gray-700 mb-1">Tipo</label>
+                    <select id="tipo" class="p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors">
+                        <option value="receita">Entrada</option>
+                        <option value="despesa">Despesa</option>
+                    </select>
+                </div>
+                <div class="flex flex-col">
+                    <label for="item" class="font-medium text-gray-700 mb-1">Descrição</label>
+                    <input type="text" id="item" placeholder="Ex: Salário, Netflix..." class="p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors" required>
+                </div>
+                <div class="flex flex-col">
+                    <label for="valor" class="font-medium text-gray-700 mb-1">Valor (€)</label>
+                    <input type="number" id="valor" placeholder="Ex: 1500" class="p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors" step="0.01" required>
+                </div>
+                <div class="flex flex-col">
+                    <label for="categoria" class="font-medium text-gray-700 mb-1">Categoria (Despesa)</label>
+                    <input type="text" id="categoria" placeholder="Ex: Alimentação, Lazer..." class="p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors">
+                </div>
+            </div>
+            <div class="mt-4 flex items-center">
+                <input type="checkbox" id="recorrente" class="h-4 w-4 text-teal-600 rounded focus:ring-teal-500">
+                <label for="recorrente" class="ml-2 font-medium text-gray-700">Transação Recorrente</label>
+            </div>
+            <button type="submit" class="w-full mt-6 bg-blue-600 text-white font-bold py-3 rounded-xl hover:bg-blue-700 transition-colors">Adicionar Transação</button>
+        </form>
+
+        <!-- Histórico de Transações -->
+        <div>
+            <h2 class="text-lg font-bold text-gray-800 mb-4 text-center">Histórico de Transações</h2>
+            <ul id="transaction-list" class="bg-white p-4 rounded-3xl shadow-sm space-y-3"></ul>
+        </div>
+    </div>
+    
+    <!-- Modal de Mensagens -->
+    <div id="modal" class="fixed inset-0 bg-gray-600 bg-opacity-50 hidden flex justify-center items-center p-4 z-50">
+        <div class="bg-white rounded-xl p-6 shadow-xl text-center w-full max-w-sm">
+            <p id="modal-message" class="text-lg font-semibold text-gray-800 mb-4"></p>
+            <div class="flex justify-center space-x-4">
+                <button id="modal-confirm-button" class="hidden bg-red-600 text-white font-bold py-2 px-6 rounded-lg hover:bg-red-700 transition-colors">Confirmar</button>
+                <button id="modal-close-button" class="bg-gray-200 text-gray-800 font-bold py-2 px-6 rounded-lg hover:bg-gray-300 transition-colors">OK</button>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
